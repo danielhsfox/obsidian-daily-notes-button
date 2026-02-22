@@ -1,0 +1,51 @@
+/* 
+Daily Notes Button Plugin
+Minimalist design with Obsidian theme integration
+*/
+
+.daily-notes-button-container {
+	margin: 8px 0;
+	display: flex;
+	justify-content: flex-end;
+	width: 100%;
+}
+
+.daily-notes-button {
+	background: var(--interactive-accent);
+	color: white;
+	border: none;
+	padding: 8px 16px;
+	border-radius: 6px;
+	cursor: pointer;
+	font-size: 13px;
+	font-weight: 500;
+	transition: all 0.2s ease;
+	width: 100%;
+	text-align: center;
+	box-sizing: border-box;
+}
+
+.daily-notes-button:hover {
+	background: var(--interactive-accent-hover);
+	transform: translateY(-1px);
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.daily-notes-button:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+	transform: none;
+}
+
+.daily-notes-button:active {
+	transform: translateY(0);
+}
+
+/* Para compatibilidad con temas claros/oscuros */
+.theme-dark .daily-notes-button {
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.theme-light .daily-notes-button {
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
