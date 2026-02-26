@@ -3,14 +3,16 @@
  * Copyright (c) 2026 danielhsfox
  * @license MIT
  */
-import { App, Plugin, Notice, TFile } from 'obsidian';
+import { App, Plugin, Notice, TFile, PluginSettingTab, Setting } from 'obsidian';
 
 // Configuración del plugin (simplificada, sin opciones de días)
 interface DailyNotesButtonPluginSettings {
-	// Vacío por ahora, pero lo mantenemos para futuras expansiones
+	tags: string[];  // Lista de tags a reconocer
 }
 
-const DEFAULT_SETTINGS: DailyNotesButtonPluginSettings = {}
+const DEFAULT_SETTINGS: DailyNotesButtonPluginSettings = {
+	tags: ['#educacion', '#trabajo', '#familia']  // Tags por defecto
+}
 
 export default class DailyNotesButtonPlugin extends Plugin {
 	settings: DailyNotesButtonPluginSettings;
@@ -65,16 +67,19 @@ export default class DailyNotesButtonPlugin extends Plugin {
 		'sabado': 6,  // sin acento
 	};
 
-	async onload() {
-		await this.loadSettings();
+async onload() {
+    await this.loadSettings();
 
-		// Registrar el procesador de bloques de código
-		this.registerMarkdownCodeBlockProcessor('daily-notes-button', (source, el, ctx) => {
-			this.createButtonBlock(source, el, ctx);
-		});
+    // Registrar el procesador de bloques de código
+    this.registerMarkdownCodeBlockProcessor('daily-notes-button', (source, el, ctx) => {
+        this.createButtonBlock(source, el, ctx);
+    });
 
-		console.log('Daily Notes Button plugin loaded');
-	}
+    // Añadir pestaña de configuración
+    this.addSettingTab(new DailyNotesButtonSettingTab(this.app, this));
+
+    console.log('Daily Notes Button plugin loaded');
+}
 
 createButtonBlock(source: string, container: HTMLElement, ctx: any) {
 	const config = this.parseConfig(source);
@@ -228,136 +233,388 @@ createButtonBlock(source: string, container: HTMLElement, ctx: any) {
 		return processedLines.join('\n');
 	}
 
-	async processTemplaterCommands(content: string, fileName: string = '', destinationFolder: string = ''): Promise<string> {
-		try {
-			let processed = content;
-			// Usar moment de Obsidian
-			const moment = (window as any).moment();
-			const currentDate = this.getFormattedCurrentDate();
-			const dayOfWeek = moment.format("dddd").toLowerCase();
-			
-			// PRIMERO: Procesar líneas condicionales [días]
-			processed = this.processConditionalLines(processed);
-			
-			// Procesar comando de pendientes de ayer (español)
-			if (processed.includes('<% MI_LISTA_PENDIENTES_AYER %>')) {
-				const pendingItems = await this.getPreviousDayPendingItems(destinationFolder);
-				
-				if (pendingItems && pendingItems.trim()) {
-					processed = processed.replace('<% MI_LISTA_PENDIENTES_AYER %>', pendingItems);
-				} else {
-					processed = processed.replace(/^\s*<% MI_LISTA_PENDIENTES_AYER %>\s*$/gm, '');
-				}
-			}
-			
-			// Procesar comando de pendientes de ayer (inglés)
-			if (processed.includes('<% YESTERDAY_PENDING_TASKS %>')) {
-				const pendingItems = await this.getPreviousDayPendingItems(destinationFolder);
-				
-				if (pendingItems && pendingItems.trim()) {
-					processed = processed.replace('<% YESTERDAY_PENDING_TASKS %>', pendingItems);
-				} else {
-					processed = processed.replace(/^\s*<% YESTERDAY_PENDING_TASKS %>\s*$/gm, '');
-				}
-			}
-			
-			// Reemplazos de Templater
-			const replacements = [
-				{
-					regex: /<%[-_]?\s*tp\.date\.now\s*\(\s*["']([^"']+)["']\s*\)\s*[-_]?%>/g,
-					replacement: (match: string, format: string) => moment.format(format)
-				},
-				{
-					regex: /<%[-_]?\s*tp\.date\.now\s*\(\s*\)\s*[-_]?%>/g,
-					replacement: currentDate
-				},
-				{
-					regex: /<%[-_]?\s*tp\.file\.title\s*\(\s*\)\s*[-_]?%>/g,
-					replacement: fileName || currentDate
-				},
-				{
-					regex: /<%[-_]?\s*tp\.date\.weekday\s*\(\s*["']?([^"')]+)["']?\s*\)\s*[-_]?%>/g,
-					replacement: dayOfWeek
-				}
-			];
+async processTemplaterCommands(content: string, fileName: string = '', destinationFolder: string = ''): Promise<string> {
+    try {
+        let processed = content;
+        // Usar moment de Obsidian
+        const moment = (window as any).moment();
+        const currentDate = this.getFormattedCurrentDate();
+        const dayOfWeek = moment.format("dddd").toLowerCase();
+        
+        // PRIMERO: Procesar líneas condicionales [días]
+        processed = this.processConditionalLines(processed);
+        
+        // Procesar comando de pendientes de ayer (español)
+        if (processed.includes('<% MI_LISTA_PENDIENTES_AYER %>')) {
+            const pendingItems = await this.getPreviousDayPendingItems(destinationFolder);
+            
+            if (pendingItems && pendingItems.trim()) {
+                processed = processed.replace('<% MI_LISTA_PENDIENTES_AYER %>', pendingItems);
+            } else {
+                processed = processed.replace(/^\s*<% MI_LISTA_PENDIENTES_AYER %>\s*$/gm, '');
+            }
+        }
+        
+        // Procesar comando de pendientes de ayer (inglés)
+        if (processed.includes('<% YESTERDAY_PENDING_TASKS %>')) {
+            const pendingItems = await this.getPreviousDayPendingItems(destinationFolder);
+            
+            if (pendingItems && pendingItems.trim()) {
+                processed = processed.replace('<% YESTERDAY_PENDING_TASKS %>', pendingItems);
+            } else {
+                processed = processed.replace(/^\s*<% YESTERDAY_PENDING_TASKS %>\s*$/gm, '');
+            }
+        }
+        
+        // Procesar comandos de pendientes por tag
+        for (const tag of this.settings.tags) {
+            const tagCommand = `<% YESTERDAY_PENDING_TASKS:${tag} %>`;
+            if (processed.includes(tagCommand)) {
+                const pendingItems = await this.getPreviousDayPendingItemsByTag(destinationFolder, tag);
+                
+                if (pendingItems && pendingItems.trim()) {
+                    processed = processed.replace(tagCommand, pendingItems);
+                } else {
+                    processed = processed.replace(new RegExp(`^\\s*${this.escapeRegExp(tagCommand)}\\s*$`, 'gm'), '');
+                }
+            }
+        }
+        
+        // Reemplazos de Templater
+        const replacements = [
+            {
+                regex: /<%[-_]?\s*tp\.date\.now\s*\(\s*["']([^"']+)["']\s*\)\s*[-_]?%>/g,
+                replacement: (match: string, format: string) => moment.format(format)
+            },
+            {
+                regex: /<%[-_]?\s*tp\.date\.now\s*\(\s*\)\s*[-_]?%>/g,
+                replacement: currentDate
+            },
+            {
+                regex: /<%[-_]?\s*tp\.file\.title\s*\(\s*\)\s*[-_]?%>/g,
+                replacement: fileName || currentDate
+            },
+            {
+                regex: /<%[-_]?\s*tp\.date\.weekday\s*\(\s*["']?([^"')]+)["']?\s*\)\s*[-_]?%>/g,
+                replacement: dayOfWeek
+            }
+        ];
 
-			for (const replacement of replacements) {
-				if (typeof replacement.replacement === 'function') {
-					processed = processed.replace(replacement.regex, replacement.replacement as any);
-				} else {
-					processed = processed.replace(replacement.regex, replacement.replacement as string);
-				}
-			}
+        for (const replacement of replacements) {
+            if (typeof replacement.replacement === 'function') {
+                processed = processed.replace(replacement.regex, replacement.replacement as any);
+            } else {
+                processed = processed.replace(replacement.regex, replacement.replacement as string);
+            }
+        }
 
-			// Reemplazos simples adicionales
-			processed = processed.replace(/<%tp\.date\.now\(\)%>/g, currentDate);
-			processed = processed.replace(/<%tp\.date\.now\(["']([^"']+)["']\)%>/g, (match, format) => moment.format(format));
-			processed = processed.replace(/<%tp\.file\.title\(\)%>/g, fileName || currentDate);
-			
-			return processed;
-		} catch (error) {
-			console.error('Error processing Templater commands:', error);
-			return content;
-		}
-	}
+        // Reemplazos simples adicionales
+        processed = processed.replace(/<%tp\.date\.now\(\)%>/g, currentDate);
+        processed = processed.replace(/<%tp\.date\.now\(["']([^"']+)["']\)%>/g, (match, format) => moment.format(format));
+        processed = processed.replace(/<%tp\.file\.title\(\)%>/g, fileName || currentDate);
+        
+        return processed;
+    } catch (error) {
+        console.error('Error processing Templater commands:', error);
+        return content;
+    }
+}
 
-	async getPreviousDayPendingItems(destinationFolder: string = ''): Promise<string> {
-		try {
-			const moment = (window as any).moment();
-			const yesterday = moment.subtract(1, 'days').format("YYYY-MM-DD");
-			const yesterdayFileName = `${yesterday}.md`;
-			
-			// Construir ruta del archivo de ayer
-			let yesterdayFilePath: string;
-			if (destinationFolder && destinationFolder.trim()) {
-				const cleanFolder = destinationFolder.replace(/^\/+|\/+$/g, '');
-				yesterdayFilePath = `${cleanFolder}/${yesterdayFileName}`;
-			} else {
-				yesterdayFilePath = yesterdayFileName;
-			}
-			
-			// Buscar la nota del día anterior
-			const yesterdayNote = this.app.vault.getAbstractFileByPath(yesterdayFilePath);
-			
-			if (!yesterdayNote || !(yesterdayNote instanceof TFile)) {
-				return '';
-			}
-			
-			// Leer el contenido
-			const content = await this.app.vault.read(yesterdayNote);
-			
-			if (!content || typeof content !== 'string') {
-				return '';
-			}
-			
-			// Extraer items no completados (ignorando los marcadores de días)
-			const pendingItems = content
-				.split('\n')
-				.filter(line => {
-					// Eliminar primero el marcador de días si existe para la detección
-					const lineWithoutDays = line.replace(/\s*\[[^\]]+\]\s*$/, '');
-					return lineWithoutDays.includes('- [ ] ') || 
-						   lineWithoutDays.includes('* [ ] ') || 
-						   lineWithoutDays.includes('+ [ ] ') ||
-						   /^\s*[-*+]\s+\[[ ]\]/.test(lineWithoutDays);
-				})
-				.map(line => {
-					// Limpiar el marcador de días antes de migrar
-					return line.replace(/\s*\[[^\]]+\]\s*$/, '').trim();
-				})
-				.filter(line => line.length > 0);
-			
-			if (pendingItems.length === 0) {
-				return '';
-			}
-			
-			return pendingItems.join('\n');
-			
-		} catch (error) {
-			console.error('Error in getPreviousDayPendingItems:', error);
-			return '';
-		}
-	}
+async getPreviousDayPendingItemsByTag(destinationFolder: string = '', targetTag: string): Promise<string> {
+    try {
+        const moment = (window as any).moment();
+        const yesterday = moment.subtract(1, 'days').format("YYYY-MM-DD");
+        const yesterdayFileName = `${yesterday}.md`;
+        
+        // Construir ruta del archivo de ayer
+        let yesterdayFilePath: string;
+        if (destinationFolder && destinationFolder.trim()) {
+            const cleanFolder = destinationFolder.replace(/^\/+|\/+$/g, '');
+            yesterdayFilePath = `${cleanFolder}/${yesterdayFileName}`;
+        } else {
+            yesterdayFilePath = yesterdayFileName;
+        }
+        
+        // Buscar la nota del día anterior
+        const yesterdayNote = this.app.vault.getAbstractFileByPath(yesterdayFilePath);
+        
+        if (!yesterdayNote || !(yesterdayNote instanceof TFile)) {
+            return '';
+        }
+        
+        // Leer el contenido
+        const content = await this.app.vault.read(yesterdayNote);
+        
+        if (!content || typeof content !== 'string') {
+            return '';
+        }
+        
+        // Extraer tareas pendientes del tag específico
+        return this.extractPendingTasksByTag(content, targetTag);
+        
+    } catch (error) {
+        console.error('Error in getPreviousDayPendingItemsByTag:', error);
+        return '';
+    }
+}
+
+extractPendingTasksByTag(content: string, targetTag: string): string {
+    const lines = content.split('\n');
+    const result: string[] = [];
+    
+    let i = 0;
+    let inTargetSection = false;
+    
+    while (i < lines.length) {
+        const line = lines[i];
+        
+        if (typeof line === 'undefined') {
+            i++;
+            continue;
+        }
+        
+        // Detectar si es un tag (línea que comienza con #)
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith('#')) {
+            // Si encontramos el tag que buscamos, activamos la sección
+            // PERO NO incluimos el tag en el resultado
+            if (trimmedLine === targetTag) {
+                inTargetSection = true;
+            } else {
+                inTargetSection = false;
+            }
+            i++;
+            continue;
+        }
+        
+        // Si estamos en la sección del tag que buscamos, procesar las tareas
+        if (inTargetSection) {
+            const lineWithoutDays = line.replace(/\s*\[[^\]]+\]\s*$/, '');
+            
+            // Detectar si es una tarea
+            const isTask = lineWithoutDays.includes('- [') || 
+                          lineWithoutDays.includes('* [') || 
+                          lineWithoutDays.includes('+ [') ||
+                          /^\s*[-*+]\s+\[[ x]\]/.test(lineWithoutDays);
+            
+            if (isTask) {
+                // Detectar nivel de indentación
+                const indentation = line.match(/^\s*/)?.[0] || '';
+                const level = indentation.length;
+                
+                // Determinar si está completada
+                const isCompleted = lineWithoutDays.includes('- [x]') || 
+                                   lineWithoutDays.includes('* [x]') || 
+                                   lineWithoutDays.includes('+ [x]') ||
+                                   /^\s*[-*+]\s+\[x\]/.test(lineWithoutDays);
+                
+                // Si es una tarea padre (nivel 0)
+                if (level === 0) {
+                    if (!isCompleted) {
+                        // Incluir el padre con todas sus hijas
+                        const linesToInclude: string[] = [line];
+                        
+                        let j = i + 1;
+                        while (j < lines.length) {
+                            const nextLine = lines[j];
+                            
+                            if (typeof nextLine === 'undefined') {
+                                j++;
+                                continue;
+                            }
+                            
+                            const nextIndentation = nextLine.match(/^\s*/)?.[0] || '';
+                            const nextLevel = nextIndentation.length;
+                            
+                            if (nextLevel <= level) {
+                                break;
+                            }
+                            
+                            linesToInclude.push(nextLine);
+                            j++;
+                        }
+                        
+                        result.push(...linesToInclude.filter(l => typeof l !== 'undefined'));
+                        i = j;
+                    } else {
+                        // Saltar padre completado y sus hijas
+                        let j = i + 1;
+                        while (j < lines.length) {
+                            const nextLine = lines[j];
+                            
+                            if (typeof nextLine === 'undefined') {
+                                j++;
+                                continue;
+                            }
+                            
+                            const nextIndentation = nextLine.match(/^\s*/)?.[0] || '';
+                            const nextLevel = nextIndentation.length;
+                            
+                            if (nextLevel <= 0) {
+                                break;
+                            }
+                            j++;
+                        }
+                        i = j;
+                    }
+                } else {
+                    i++;
+                }
+            } else {
+                i++;
+            }
+        } else {
+            i++;
+        }
+    }
+    
+    return result.join('\n');
+}
+
+escapeRegExp(string: string): string {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async getPreviousDayPendingItems(destinationFolder: string = ''): Promise<string> {
+    try {
+        const moment = (window as any).moment();
+        const yesterday = moment.subtract(1, 'days').format("YYYY-MM-DD");
+        const yesterdayFileName = `${yesterday}.md`;
+        
+        // Construir ruta del archivo de ayer
+        let yesterdayFilePath: string;
+        if (destinationFolder && destinationFolder.trim()) {
+            const cleanFolder = destinationFolder.replace(/^\/+|\/+$/g, '');
+            yesterdayFilePath = `${cleanFolder}/${yesterdayFileName}`;
+        } else {
+            yesterdayFilePath = yesterdayFileName;
+        }
+        
+        // Buscar la nota del día anterior
+        const yesterdayNote = this.app.vault.getAbstractFileByPath(yesterdayFilePath);
+        
+        if (!yesterdayNote || !(yesterdayNote instanceof TFile)) {
+            return '';
+        }
+        
+        // Leer el contenido
+        const content = await this.app.vault.read(yesterdayNote);
+        
+        if (!content || typeof content !== 'string') {
+            return '';
+        }
+        
+        // Procesar líneas para extraer tareas no completadas manteniendo jerarquía
+        return this.extractPendingTasksWithHierarchy(content);
+        
+    } catch (error) {
+        console.error('Error in getPreviousDayPendingItems:', error);
+        return '';
+    }
+}
+
+extractPendingTasksWithHierarchy(content: string): string {
+    const lines = content.split('\n');
+    const pendingLines: string[] = [];
+    
+    let i = 0;
+    
+    while (i < lines.length) {
+        const line = lines[i];
+        
+        // Verificar que la línea existe
+        if (typeof line === 'undefined') {
+            i++;
+            continue;
+        }
+        
+        const lineWithoutDays = line.replace(/\s*\[[^\]]+\]\s*$/, '');
+        
+        // Detectar si es una tarea (checklist)
+        const isTask = lineWithoutDays.includes('- [') || 
+                      lineWithoutDays.includes('* [') || 
+                      lineWithoutDays.includes('+ [') ||
+                      /^\s*[-*+]\s+\[[ x]\]/.test(lineWithoutDays);
+        
+        if (isTask) {
+            // Detectar nivel de indentación
+            const indentation = line.match(/^\s*/)?.[0] || '';
+            const level = indentation.length;
+            
+            // Determinar si está completada
+            const isCompleted = lineWithoutDays.includes('- [x]') || 
+                               lineWithoutDays.includes('* [x]') || 
+                               lineWithoutDays.includes('+ [x]') ||
+                               /^\s*[-*+]\s+\[x\]/.test(lineWithoutDays);
+            
+            // Si es una tarea padre (nivel 0)
+            if (level === 0) {
+                if (!isCompleted) {
+                    // Si el padre no está completado, incluirlo con todas sus hijas
+                    const linesToInclude: string[] = [line];
+                    
+                    // Buscar todas las líneas hijas (con mayor indentación)
+                    let j = i + 1;
+                    while (j < lines.length) {
+                        const nextLine = lines[j];
+                        
+                        // Verificar que la línea siguiente existe
+                        if (typeof nextLine === 'undefined') {
+                            j++;
+                            continue;
+                        }
+                        
+                        const nextIndentation = nextLine.match(/^\s*/)?.[0] || '';
+                        const nextLevel = nextIndentation.length;
+                        
+                        // Si encontramos una línea con menor o igual indentación, terminamos las hijas
+                        if (nextLevel <= level) {
+                            break;
+                        }
+                        
+                        // Incluir la línea hija (sin modificar)
+                        linesToInclude.push(nextLine);
+                        j++;
+                    }
+                    
+                    // Limpiar líneas undefined antes de agregar
+                    const cleanLinesToInclude = linesToInclude.filter(l => typeof l !== 'undefined') as string[];
+                    pendingLines.push(...cleanLinesToInclude);
+                    i = j; // Saltar al siguiente padre
+                } else {
+                    // Si el padre está completado, saltar todas sus hijas
+                    let j = i + 1;
+                    while (j < lines.length) {
+                        const nextLine = lines[j];
+                        
+                        // Verificar que la línea siguiente existe
+                        if (typeof nextLine === 'undefined') {
+                            j++;
+                            continue;
+                        }
+                        
+                        const nextIndentation = nextLine.match(/^\s*/)?.[0] || '';
+                        const nextLevel = nextIndentation.length;
+                        
+                        if (nextLevel <= 0) {
+                            break;
+                        }
+                        j++;
+                    }
+                    i = j;
+                }
+            } else {
+                // Si no es tarea padre, procesar normalmente
+                i++;
+            }
+        } else {
+            // No es una tarea, ignorar
+            i++;
+        }
+    }
+    
+    return pendingLines.join('\n');
+}
 
 	async ensureFolderExists(folderPath: string): Promise<void> {
 		try {
@@ -500,4 +757,59 @@ async handleButtonClick(button: HTMLButtonElement, config: any, event?: MouseEve
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
+}
+
+
+
+class DailyNotesButtonSettingTab extends PluginSettingTab {
+    plugin: DailyNotesButtonPlugin;
+
+    constructor(app: App, plugin: DailyNotesButtonPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
+
+        containerEl.createEl('h2', { text: 'Daily Notes Button Settings' });
+
+        // Configuración de tags
+        containerEl.createEl('h3', { text: 'Tags to Recognize' });
+        containerEl.createEl('p', { 
+            text: 'Add the tags that will be used with <% YESTERDAY_PENDING_TASKS:tag %>',
+            cls: 'setting-item-description'
+        });
+
+        // Mostrar tags actuales
+        this.plugin.settings.tags.forEach((tag, index) => {
+            new Setting(containerEl)
+                .setName(`Tag ${index + 1}`)
+                .addText(text => text
+                    .setValue(tag)
+                    .onChange(async (value) => {
+                        this.plugin.settings.tags[index] = value;
+                        await this.plugin.saveSettings();
+                    }))
+                .addButton(button => button
+                    .setButtonText('Remove')
+                    .onClick(async () => {
+                        this.plugin.settings.tags.splice(index, 1);
+                        await this.plugin.saveSettings();
+                        this.display(); // Refrescar la vista
+                    }));
+        });
+
+        // Botón para añadir nuevo tag
+        new Setting(containerEl)
+            .addButton(button => button
+                .setButtonText('Add New Tag')
+                .setCta()
+                .onClick(async () => {
+                    this.plugin.settings.tags.push('#nuevo-tag');
+                    await this.plugin.saveSettings();
+                    this.display(); // Refrescar la vista
+                }));
+    }
 }
